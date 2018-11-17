@@ -34,14 +34,17 @@ K.set_image_data_format('channels_last')
 
 def preprocess_data(_X, _Y, _X_test, _Y_test, _seq_len, _nb_ch):
     # split into sequences
-    _X = split_in_seqs(_X, _seq_len)
-    _Y = split_in_seqs(_Y, _seq_len)
+    _X = split_in_seqs(_X, 1)
+    #_Y = split_in_seqs(_Y, 1)
 
-    _X_test = split_in_seqs(_X_test, _seq_len)
-    _Y_test = split_in_seqs(_Y_test, _seq_len)
+    _X_test = split_in_seqs(_X_test, 1)
+    # _Y_test = split_in_seqs(_Y_test, 1)
 
+    print "split multi channel: ", _X.shape
     _X = split_multi_channels(_X, _nb_ch)
     _X_test = split_multi_channels(_X_test, _nb_ch)
+    _X = _X.reshape(-1, 1, 40, 1).astype('float32')
+    _X_test = _X_test.reshape(-1, 1, 40, 1).astype('float32')
     return _X, _Y, _X_test, _Y_test
 
 def load_data(_feat_folder, _mono, _fold=None):
@@ -156,9 +159,11 @@ def CapsNet(input_shape, n_class, routings):
 
     # Layer 1: Just a conventional Conv2D layer
     conv1 = layers.Conv2D(filters=256, kernel_size=(3, 3), strides=1, padding='same', activation='relu', name='conv1')(x)
+    #conv1 = layers.Conv2D(filters=256, kernel_size=9, strides=1, padding='valid', activation='relu', name='conv1')(x)
 
     # Layer 2: Conv2D layer with `squash` activation, then reshape to [None, num_capsule, dim_capsule]
     primarycaps = PrimaryCap(conv1, dim_capsule=8, n_channels=32, kernel_size=(3, 3), strides=2, padding='same')
+    #primarycaps = PrimaryCap(conv1, dim_capsule=8, n_channels=32, kernel_size=9, strides=2, padding='valid')
 
     # Layer 3: Capsule layer. Routing algorithm works here.
     digitcaps = CapsuleLayer(num_capsule=n_class, dim_capsule=16, routings=routings,
@@ -329,7 +334,7 @@ if __name__ == "__main__":
     # setting the hyper parameters
     parser = argparse.ArgumentParser(description="Capsule Network on MNIST.")
     parser.add_argument('--epochs', default=50, type=int)
-    parser.add_argument('--batch_size', default=100, type=int)
+    parser.add_argument('--batch_size', default=256, type=int)
     parser.add_argument('--lr', default=0.001, type=float,
                         help="Initial learning rate")
     parser.add_argument('--lr_decay', default=0.9, type=float,
@@ -359,7 +364,7 @@ if __name__ == "__main__":
     #              Main script starts here
     # ###################################################################
 
-    is_mono = False
+    is_mono = True
     __class_labels = {
         'brakes squeaking': 0,
         'car': 1,
@@ -429,15 +434,21 @@ if __name__ == "__main__":
 
     x_train, y_train, x_test, y_test = preprocess_data(X, Y, X_test, Y_test, seq_len, nb_ch)
 
+    # x_train = X.reshape(-1, 1, 40, 1).astype('float32')
+    # x_test = Y.reshape(-1, 1, 40, 1).astype('float32')
+
     print x_train.shape
     print y_train.shape
     # load data
-    (x_train, y_train), (x_test, y_test) = load_mnist()
+    # (x_train, y_train), (x_test, y_test) = load_mnist()
     # print x_train.shape
     # print y_train.shape
 
     # define model
     # print x_train
+    print "input: ", x_train.shape[1:]
+    print "class: ", len(np.unique(np.argmax(y_train, 1)))
+
     model, eval_model, manipulate_model = CapsNet(input_shape=x_train.shape[1:],
                                                   n_class=len(np.unique(np.argmax(y_train, 1))),
                                                   routings=args.routings)
