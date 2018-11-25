@@ -5,6 +5,8 @@ import csv
 import math
 import pandas
 
+eps = np.finfo(np.float).eps
+
 def create_folder(_fold_path):
     if not os.path.exists(_fold_path):
         os.makedirs(_fold_path)

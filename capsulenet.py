@@ -19,6 +19,7 @@ Author: Xifeng Guo, E-mail: `guoxifeng1990@163.com`, Github: `https://github.com
 import time
 import wave
 import librosa
+import metrics
 import numpy as np
 from keras import layers, models, optimizers
 from keras import backend as K
@@ -158,11 +159,11 @@ def CapsNet(input_shape, n_class, routings):
     x = layers.Input(shape=input_shape)
 
     # Layer 1: Just a conventional Conv2D layer
-    conv1 = layers.Conv2D(filters=256, kernel_size=(3, 3), strides=1, padding='same', activation='relu', name='conv1')(x)
+    conv1 = layers.Conv2D(filters=256, kernel_size=(3, 5), strides=1, padding='same', activation='relu', name='conv1')(x)
     #conv1 = layers.Conv2D(filters=256, kernel_size=9, strides=1, padding='valid', activation='relu', name='conv1')(x)
 
     # Layer 2: Conv2D layer with `squash` activation, then reshape to [None, num_capsule, dim_capsule]
-    primarycaps = PrimaryCap(conv1, dim_capsule=8, n_channels=32, kernel_size=(3, 3), strides=2, padding='same')
+    primarycaps = PrimaryCap(conv1, dim_capsule=8, n_channels=32, kernel_size=(3, 5), strides=2, padding='same')
     #primarycaps = PrimaryCap(conv1, dim_capsule=8, n_channels=32, kernel_size=9, strides=2, padding='valid')
 
     # Layer 3: Capsule layer. Routing algorithm works here.
@@ -218,6 +219,10 @@ def train(model, data, args):
     :param args: arguments
     :return: The trained model
     """
+    best_epoch, pat_cnt, best_er, f1_for_best_er, best_conf_mat = 0, 0, 99999, None, None
+    tr_loss, val_loss, f1_overall_1sec_list, er_overall_1sec_list = [0] * nb_epoch, [0] * nb_epoch, [0] * nb_epoch, [0] * nb_epoch
+    posterior_thresh = 0.5
+
     # unpacking the data
     (x_train, y_train), (x_test, y_test) = data
 
@@ -251,7 +256,7 @@ def train(model, data, args):
             yield ([x_batch, y_batch], [y_batch, x_batch])
 
     # Training with data augmentation. If shift_fraction=0., also no augmentation.
-    model.fit_generator(generator=train_generator(x_train, y_train, args.batch_size, args.shift_fraction),
+    hist = model.fit_generator(generator=train_generator(x_train, y_train, args.batch_size, args.shift_fraction),
                         steps_per_epoch=int(y_train.shape[0] / args.batch_size),
                         epochs=args.epochs,
                         validation_data=[[x_test, y_test], [y_test, x_test]],
@@ -261,6 +266,31 @@ def train(model, data, args):
     model.save_weights(args.save_dir + '/trained_model.h5')
     print('Trained model saved to \'%s/trained_model.h5\'' % args.save_dir)
 
+    val_loss = hist.history.get('val_loss')[-1]
+    tr_loss = hist.history.get('loss')[-1]
+
+    # Calculate the predictions on test data, in order to calculate ER and F scores
+    print x_test.shape
+    pred = eval_model.predict(x_test)
+    print('pred[0]:', pred[0])
+    print('pred shape:', pred[0].shape)
+    pred_thresh = pred[0] > posterior_thresh
+    print('pred_thresh:', pred_thresh)
+    score_list = metrics.compute_scores(pred_thresh, y_test, frames_in_1_sec=frames_1_sec)
+
+    f1_overall_1sec_list = score_list['f1_overall_1sec']
+    er_overall_1sec_list = score_list['er_overall_1sec']
+    pat_cnt = pat_cnt + 1
+
+    # Calculate confusion matrix
+    # test_pred_cnt = np.sum(pred_thresh, 2)
+    # y_test_cnt = np.sum(Y_test, 2)
+    # conf_mat = confusion_matrix(y_test_cnt.reshape(-1), test_pred_cnt.reshape(-1))
+    # conf_mat = conf_mat / (utils.eps + np.sum(conf_mat, 1)[:, None].astype('float'))
+
+    print('tr Er : {}, val Er : {}, F1_overall : {}, ER_overall : {} Best ER : {}, best_epoch: {}'.format(
+        tr_loss, val_loss, f1_overall_1sec_list, er_overall_1sec_list, best_er, best_epoch))
+
     from utils import plot_log
     plot_log(args.save_dir + '/log.csv', show=True)
 
@@ -268,29 +298,37 @@ def train(model, data, args):
 
 
 def test(model, data, args):
+    print('Start testing ..<========')
     x_test, y_test = data
-    y_pred, x_recon = model.predict(x_test, batch_size=100)
-    print('-'*30 + 'Begin: test' + '-'*30)
-    print('Test acc:', np.sum(np.argmax(y_pred, 1) == np.argmax(y_test, 1))/y_test.shape[0])
+    # y_pred, x_recon = model.predict(x_test, batch_size=100)
+    # y_pred = model.predict(x_test, batch_size=100)
+    y_pred = model.predict(x_test)
+    print 'y_pred=', y_pred
+    # print 'x_recon=', x_recon 
+    # print('-'*30 + 'Begin: test' + '-'*30)
+    # print('Test acc:', np.sum(np.argmax(y_pred, 1) == np.argmax(y_test, 1))/y_test.shape[0])
 
-    img = combine_images(np.concatenate([x_test[:50],x_recon[:50]]))
-    image = img * 255
-    Image.fromarray(image.astype(np.uint8)).save(args.save_dir + "/real_and_recon.png")
-    print()
-    print('Reconstructed images are saved to %s/real_and_recon.png' % args.save_dir)
-    print('-' * 30 + 'End: test' + '-' * 30)
-    plt.imshow(plt.imread(args.save_dir + "/real_and_recon.png"))
-    plt.show()
+    # img = combine_images(np.concatenate([x_test[:50],x_recon[:50]]))
+    # image = img * 255
+    # Image.fromarray(image.astype(np.uint8)).save(args.save_dir + "/real_and_recon.png")
+    # print()
+    # print('Reconstructed images are saved to %s/real_and_recon.png' % args.save_dir)
+    # print('-' * 30 + 'End: test' + '-' * 30)
+    # plt.imshow(plt.imread(args.save_dir + "/real_and_recon.png"))
+    # plt.show()
 
 
 def manipulate_latent(model, data, args):
     print('-'*30 + 'Begin: manipulate' + '-'*30)
     x_test, y_test = data
+    print '==>', args.digit
+    print x_test.shape
+    print y_test.shape
     index = np.argmax(y_test, 1) == args.digit
     number = np.random.randint(low=0, high=sum(index) - 1)
     x, y = x_test[index][number], y_test[index][number]
     x, y = np.expand_dims(x, 0), np.expand_dims(y, 0)
-    noise = np.zeros([1, 10, 16])
+    noise = np.zeros([1, 6, 16])
     x_recons = []
     for dim in range(16):
         for r in [-0.25, -0.2, -0.15, -0.1, -0.05, 0, 0.05, 0.1, 0.15, 0.2, 0.25]:
@@ -300,6 +338,7 @@ def manipulate_latent(model, data, args):
             x_recons.append(x_recon)
 
     x_recons = np.concatenate(x_recons)
+    print '===>', x_recon
 
     img = combine_images(x_recons, height=16)
     image = img*255
@@ -376,12 +415,13 @@ if __name__ == "__main__":
 
     # location of data.
     folds_list = [1] #[1, 2, 3, 4]
-    evaluation_setup_folder = '/Users/spider391tang/projects/TUT/TUT-sound-events-2017-development/evaluation_setup'
-    audio_folder = '/Users/spider391tang/projects/TUT/TUT-sound-events-2017-development/audio/street'
+    # evaluation_setup_folder = '/Users/spider391tang/projects/TUT/TUT-sound-events-2017-development/evaluation_setup'
+    # audio_folder = '/Users/spider391tang/projects/TUT/TUT-sound-events-2017-development/audio/street'
     # audio_folder = '/Users/spider391tang/projects/learn_feature'
 
     # Output
-    feat_folder = '/Users/spider391tang/projects/TUT/feat/'
+    # feat_folder = '/Users/spider391tang/projects/TUT/feat/'
+    feat_folder = '/home/yhtseng/projects/data/feat/'
     create_folder(feat_folder)
 
     #######################################################################################
@@ -454,6 +494,8 @@ if __name__ == "__main__":
                                                   routings=args.routings)
     model.summary()
 
+    print '==============summary done================='
+
     # train or test
     if args.weights is not None:  # init the model weights with provided one
         model.load_weights(args.weights)
@@ -462,5 +504,5 @@ if __name__ == "__main__":
     else:  # as long as weights are given, will run testing
         if args.weights is None:
             print('No weights are provided. Will test using random initialized weights.')
-        manipulate_latent(manipulate_model, (x_test, y_test), args)
+        # manipulate_latent(manipulate_model, (x_test, y_test), args)
         test(model=eval_model, data=(x_test, y_test), args=args)
