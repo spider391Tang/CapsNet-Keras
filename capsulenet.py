@@ -22,6 +22,7 @@ import librosa
 import metrics
 import numpy as np
 from keras import layers, models, optimizers
+import tensorflow as tf
 from keras import backend as K
 from keras.utils import to_categorical
 import matplotlib.pyplot as plt
@@ -29,9 +30,24 @@ from utils import combine_images, create_folder, split_in_seqs, split_multi_chan
 from PIL import Image
 from capsulelayers import CapsuleLayer, PrimaryCap, Length, Mask
 from sklearn import preprocessing
+from sklearn.metrics import f1_score
 
 K.set_image_data_format('channels_last')
 
+
+def f1(y_true, y_pred):
+    y_pred = K.round(y_pred)
+    tp = K.sum(K.cast(y_true*y_pred, 'float'), axis=0)
+    # tn = K.sum(K.cast((1-y_true)*(1-y_pred), 'float'), axis=0)
+    fp = K.sum(K.cast((1-y_true)*y_pred, 'float'), axis=0)
+    fn = K.sum(K.cast(y_true*(1-y_pred), 'float'), axis=0)
+
+    p = tp / (tp + fp + K.epsilon())
+    r = tp / (tp + fn + K.epsilon())
+
+    f1 = 2*p*r / (p+r+K.epsilon())
+    f1 = tf.where(tf.is_nan(f1), tf.zeros_like(f1), f1)
+    return K.mean(f1)
 
 def preprocess_data(_X, _Y, _X_test, _Y_test, _seq_len, _nb_ch):
     # split into sequences
@@ -46,7 +62,27 @@ def preprocess_data(_X, _Y, _X_test, _Y_test, _seq_len, _nb_ch):
     _X_test = split_multi_channels(_X_test, _nb_ch)
     _X = _X.reshape(-1, 1, 40, 1).astype('float32')
     _X_test = _X_test.reshape(-1, 1, 40, 1).astype('float32')
-    return _X, _Y, _X_test, _Y_test
+
+    # add extra label
+
+    _Y_extra = np.zeros((_Y.shape[0],7))
+    _Y_extra[:,:-1] = _Y
+    for i in range( _Y.shape[0] ):
+        if sum(_Y[i]) > 0:
+            _Y_extra[i][6] = 0
+        else:
+            _Y_extra[i][6] = 1
+
+    _Y_test_extra = np.zeros((_Y_test.shape[0],7))
+    _Y_test_extra[:,:-1] = _Y_test
+    for i in range( _Y_test.shape[0] ):
+        if sum(_Y_test[i]) > 0:
+            _Y_test_extra[i][6] = 0
+        else:
+            _Y_test_extra[i][6] = 1
+
+    # np.apply_along_axis( addLabel, axis=1, arr=b )
+    return _X, _Y_extra, _X_test, _Y_test_extra
 
 def load_data(_feat_folder, _mono, _fold=None):
     feat_file_fold = os.path.join(_feat_folder, 'mbe_{}_fold{}.npz'.format('mon' if _mono else 'bin', _fold))
@@ -159,11 +195,11 @@ def CapsNet(input_shape, n_class, routings):
     x = layers.Input(shape=input_shape)
 
     # Layer 1: Just a conventional Conv2D layer
-    conv1 = layers.Conv2D(filters=256, kernel_size=(3, 5), strides=1, padding='same', activation='relu', name='conv1')(x)
+    conv1 = layers.Conv2D(filters=256, kernel_size=(3, 9), strides=1, padding='same', activation='relu', name='conv1')(x)
     #conv1 = layers.Conv2D(filters=256, kernel_size=9, strides=1, padding='valid', activation='relu', name='conv1')(x)
 
     # Layer 2: Conv2D layer with `squash` activation, then reshape to [None, num_capsule, dim_capsule]
-    primarycaps = PrimaryCap(conv1, dim_capsule=8, n_channels=32, kernel_size=(3, 5), strides=2, padding='same')
+    primarycaps = PrimaryCap(conv1, dim_capsule=8, n_channels=32, kernel_size=(3, 9), strides=2, padding='same')
     #primarycaps = PrimaryCap(conv1, dim_capsule=8, n_channels=32, kernel_size=9, strides=2, padding='valid')
 
     # Layer 3: Capsule layer. Routing algorithm works here.
@@ -266,21 +302,52 @@ def train(model, data, args):
     model.save_weights(args.save_dir + '/trained_model.h5')
     print('Trained model saved to \'%s/trained_model.h5\'' % args.save_dir)
 
-    val_loss = hist.history.get('val_loss')[-1]
-    tr_loss = hist.history.get('loss')[-1]
+    from utils import plot_log
+    plot_log(args.save_dir + '/log.csv', show=True)
+
+    return model
+
+
+def test(model, data, args):
+    print('Start testing ..<========')
+
+    best_epoch, pat_cnt, best_er, f1_for_best_er, best_conf_mat = 0, 0, 99999, None, None
+    tr_loss, val_loss, f1_overall_1sec_list, er_overall_1sec_list = [0] * nb_epoch, [0] * nb_epoch, [0] * nb_epoch, [0] * nb_epoch
+
+    posterior_thresh = 0.7
+
+    x_test, y_test = data
+    y_pred, x_recon = model.predict(x_test, batch_size=256)
+
+    # print 'x_recon=', x_recon 
+    print('-'*30 + 'Begin: test' + '-'*30)
+    print('Test acc:', np.sum(np.argmax(y_pred, 1) == np.argmax(y_test, 1))/y_test.shape[0])
+
+    for i in range(13000,13500):
+        print(y_pred[i], '|', y_test[i])
 
     # Calculate the predictions on test data, in order to calculate ER and F scores
-    print x_test.shape
-    pred = eval_model.predict(x_test)
-    print('pred[0]:', pred[0])
-    print('pred shape:', pred[0].shape)
-    pred_thresh = pred[0] > posterior_thresh
-    print('pred_thresh:', pred_thresh)
+    pred_thresh = y_pred > posterior_thresh
+    # print('pred_thresh:', pred_thresh)
     score_list = metrics.compute_scores(pred_thresh, y_test, frames_in_1_sec=frames_1_sec)
 
     f1_overall_1sec_list = score_list['f1_overall_1sec']
     er_overall_1sec_list = score_list['er_overall_1sec']
     pat_cnt = pat_cnt + 1
+
+    # y_test = y_test > posterior_thresh
+    y_test = y_test.astype(int)
+    pred_thresh = pred_thresh.astype(int)
+    print('Shape y_test:', y_test.shape)
+    print('Shape y_test:', y_test)
+    print('Shape pred_thresh:', pred_thresh.shape)
+    print('Shape pred_thresh:', pred_thresh)
+    # Results
+    print('sklearn Macro-F1-Score:', f1_score(y_test, pred_thresh, average='macro'))
+    print('Custom Macro-F1-Score:', K.eval(f1(y_test, pred_thresh)))
+
+    # np.set_printoptions(threshold=np.inf)
+    # print y_pred
 
     # Calculate confusion matrix
     # test_pred_cnt = np.sum(pred_thresh, 2)
@@ -291,29 +358,11 @@ def train(model, data, args):
     print('tr Er : {}, val Er : {}, F1_overall : {}, ER_overall : {} Best ER : {}, best_epoch: {}'.format(
         tr_loss, val_loss, f1_overall_1sec_list, er_overall_1sec_list, best_er, best_epoch))
 
-    from utils import plot_log
-    plot_log(args.save_dir + '/log.csv', show=True)
-
-    return model
-
-
-def test(model, data, args):
-    print('Start testing ..<========')
-    x_test, y_test = data
-    # y_pred, x_recon = model.predict(x_test, batch_size=100)
-    # y_pred = model.predict(x_test, batch_size=100)
-    y_pred = model.predict(x_test)
-    print 'y_pred=', y_pred
-    # print 'x_recon=', x_recon 
-    # print('-'*30 + 'Begin: test' + '-'*30)
-    # print('Test acc:', np.sum(np.argmax(y_pred, 1) == np.argmax(y_test, 1))/y_test.shape[0])
-
     # img = combine_images(np.concatenate([x_test[:50],x_recon[:50]]))
     # image = img * 255
     # Image.fromarray(image.astype(np.uint8)).save(args.save_dir + "/real_and_recon.png")
-    # print()
     # print('Reconstructed images are saved to %s/real_and_recon.png' % args.save_dir)
-    # print('-' * 30 + 'End: test' + '-' * 30)
+    print('-' * 30 + 'End: test' + '-' * 30)
     # plt.imshow(plt.imread(args.save_dir + "/real_and_recon.png"))
     # plt.show()
 
@@ -467,30 +516,20 @@ if __name__ == "__main__":
     nb_mel_bands = 40
 
     X, Y, X_test, Y_test = load_data(feat_folder, is_mono, 1)
-    print X.shape
-    print Y.shape
     print "number of channel: ", nb_ch 
     print "seq_len : ", seq_len
 
     x_train, y_train, x_test, y_test = preprocess_data(X, Y, X_test, Y_test, seq_len, nb_ch)
 
-    # x_train = X.reshape(-1, 1, 40, 1).astype('float32')
-    # x_test = Y.reshape(-1, 1, 40, 1).astype('float32')
-
-    print x_train.shape
-    print y_train.shape
     # load data
     # (x_train, y_train), (x_test, y_test) = load_mnist()
-    # print x_train.shape
-    # print y_train.shape
 
     # define model
-    # print x_train
     print "input: ", x_train.shape[1:]
-    print "class: ", len(np.unique(np.argmax(y_train, 1)))
+    # print "class: ", len(np.unique(np.argmax(y_train, 1)))
 
     model, eval_model, manipulate_model = CapsNet(input_shape=x_train.shape[1:],
-                                                  n_class=len(np.unique(np.argmax(y_train, 1))),
+                                                  n_class=7,
                                                   routings=args.routings)
     model.summary()
 
