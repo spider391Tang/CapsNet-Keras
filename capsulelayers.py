@@ -20,6 +20,7 @@ class Length(layers.Layer):
     output: shape=[None, num_vectors]
     """
     def call(self, inputs, **kwargs):
+        print("inpust: ", inputs)
         return K.sqrt(K.sum(K.square(inputs), -1))
 
     def compute_output_shape(self, input_shape):
@@ -175,7 +176,7 @@ class CapsuleLayer(layers.Layer):
         return dict(list(base_config.items()) + list(config.items()))
 
 
-def PrimaryCap(inputs, dim_capsule, n_channels, kernel_size, strides, padding):
+def PrimaryCap1(inputs, dim_capsule, n_channels, kernel_size, strides, padding):
     """
     Apply Conv2D `n_channels` times and concatenate all capsules
     :param inputs: 4D tensor, shape=[None, width, height, channels]
@@ -184,10 +185,22 @@ def PrimaryCap(inputs, dim_capsule, n_channels, kernel_size, strides, padding):
     :return: output tensor, shape=[None, num_capsule, dim_capsule]
     """
     output = layers.Conv2D(filters=dim_capsule*n_channels, kernel_size=kernel_size, strides=strides, padding=padding,
-                           name='primarycap_conv2d')(inputs)
-    outputs = layers.Reshape(target_shape=[-1, dim_capsule], name='primarycap_reshape')(output)
-    return layers.Lambda(squash, name='primarycap_squash')(outputs)
+                           name='primarycap_conv2d1')(inputs)
+    outputs = layers.Reshape(target_shape=[-1, dim_capsule], name='primarycap_reshape1')(output)
+    return layers.Lambda(squash, name='primarycap_squash1')(outputs)
 
+def PrimaryCap2(inputs, dim_capsule, n_channels, kernel_size, strides, padding):
+    """
+    Apply Conv2D `n_channels` times and concatenate all capsules
+    :param inputs: 4D tensor, shape=[None, width, height, channels]
+    :param dim_capsule: the dim of the output vector of capsule
+    :param n_channels: the number of types of capsules
+    :return: output tensor, shape=[None, num_capsule, dim_capsule]
+    """
+    output = layers.Conv2D(filters=dim_capsule*n_channels, kernel_size=kernel_size, strides=strides, padding=padding,
+                           name='primarycap_conv2d2')(inputs)
+    outputs = layers.Reshape(target_shape=[-1, dim_capsule], name='primarycap_reshape2')(output)
+    return layers.Lambda(squash, name='primarycap_squash2')(outputs)
 
 """
 # The following is another way to implement primary capsule layer. This is much slower.

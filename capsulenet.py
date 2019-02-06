@@ -28,7 +28,7 @@ from keras.utils import to_categorical
 import matplotlib.pyplot as plt
 from utils import combine_images, create_folder, split_in_seqs, split_multi_channels
 from PIL import Image
-from capsulelayers import CapsuleLayer, PrimaryCap, Length, Mask
+from capsulelayers import CapsuleLayer, PrimaryCap1, PrimaryCap2, Length, Mask
 from sklearn import preprocessing
 from sklearn.metrics import f1_score
 
@@ -101,23 +101,67 @@ def CapsNet(input_shape, n_class, routings):
     :return: Two Keras Models, the first one used for training, and the second one for evaluation.
             `eval_model` can also be used for training.
     """
+    poses_list = []
     x = layers.Input(shape=input_shape)
 
     # Layer 1: Just a conventional Conv2D layer
-    conv1 = layers.Conv2D(filters=256, kernel_size=(5, 5), strides=1, padding='same', activation='relu', name='conv1')(x)
-    #conv1 = layers.Conv2D(filters=256, kernel_size=9, strides=1, padding='valid', activation='relu', name='conv1')(x)
+    conv1 = layers.Conv2D(filters=256, kernel_size=3, strides=1, padding='same', activation='relu', name='conv1_1')(x)
 
     # Layer 2: Conv2D layer with `squash` activation, then reshape to [None, num_capsule, dim_capsule]
-    primarycaps = PrimaryCap(conv1, dim_capsule=8, n_channels=32, kernel_size=(5, 5), strides=2, padding='same')
-    #primarycaps = PrimaryCap(conv1, dim_capsule=8, n_channels=32, kernel_size=9, strides=2, padding='valid')
+    primarycaps1 = PrimaryCap1(conv1, dim_capsule=8, n_channels=32, kernel_size=(5, 5), strides=2, padding='same')
 
+    #y Layer 3: Capsule layer. Routing algorithm works here.
+    digitcaps1 = CapsuleLayer(num_capsule=n_class, dim_capsule=16, routings=routings,
+                             name='digitcaps1_1')(primarycaps1)
+
+    poses_list.append(digitcaps1)
+
+    # Layer 1: Just a conventional Conv2D layer
+    conv2 = layers.Conv2D(filters=256, kernel_size=5, strides=1, padding='same', activation='relu', name='conv1_2')(x)
+
+    # Layer 2: Conv2D layer with `squash` activation, then reshape to [None, num_capsule, dim_capsule]
+    primarycaps2 = PrimaryCap2(conv2, dim_capsule=8, n_channels=32, kernel_size=(5, 5), strides=2, padding='same')
+
+    print "befor call <======="
     # Layer 3: Capsule layer. Routing algorithm works here.
-    digitcaps = CapsuleLayer(num_capsule=n_class, dim_capsule=16, routings=routings,
-                             name='digitcaps')(primarycaps)
+    digitcaps2 = CapsuleLayer(num_capsule=n_class, dim_capsule=16, routings=routings,
+                             name='digitcaps1_2')(primarycaps2)
+    print "after call <======="
+
+    poses_list.append(digitcaps2)
+    
+    print("before pose[0]:", poses_list[0])
+    # print("convert_to_tensor:", tf.convert_to_tensor(poses_list))
+
+    # poses = tf.reduce_mean(tf.convert_to_tensor(poses_list), axis=0) 
+
+    # print("reduce_mean type: ", type(poses))
+    # print("reduce_mean : ", poses)
+
+    # print("pose:", poses)
+    # print("pose[0]:", poses[0])
+
+    # pose.layers.average = tf.reduce_mean(poses_list, axis=0) 
+    avg = layers.average(poses_list)
+
+    print("avg:", avg)
+    digitcaps = avg;
+    # digitcaps = K.sqrt(K.sum(K.square(avg), 2, True))
+    # digitcaps = K.sqrt(K.sum(K.square(avg), 2, True))
+
+    print("digitcaps type: ", type(digitcaps))
+    print("digitcaps: ", digitcaps)
+
+    # digitcaps = poses;
+
+    # print("digitcaps1 type: ", type(digitcaps1))
+    # print("digitcaps1: ", digitcaps1)
 
     # Layer 4: This is an auxiliary layer to replace each capsule with its length. Just to match the true label's shape.
     # If using tensorflow, this will not be necessary. :)
     out_caps = Length(name='capsnet')(digitcaps)
+
+    print("out_caps: ", out_caps)
 
     # Decoder network.
     y = layers.Input(shape=(n_class,))
@@ -223,7 +267,7 @@ def test(model, data, args):
     best_epoch, pat_cnt, best_er, f1_for_best_er, best_conf_mat = 0, 0, 99999, None, None
     tr_loss, val_loss, f1_overall_1sec_list, er_overall_1sec_list = [0] * nb_epoch, [0] * nb_epoch, [0] * nb_epoch, [0] * nb_epoch
 
-    posterior_thresh = 0.7
+    posterior_thresh = 0.8
 
     x_test, y_test = data
     y_pred, x_recon = model.predict(x_test, batch_size=256)
